@@ -1,1 +1,1 @@
-# Raisin-Data-Regression-Analysis
+This was a group project for BANA 7052: Applied Linear Regression. The repository is maintained for personal reference and portfolio purposes. My individual contributions included the Generalized Linear Model section, consolidating and testing the code for the RMarkdown file, and some initial plots for the EDA section.
