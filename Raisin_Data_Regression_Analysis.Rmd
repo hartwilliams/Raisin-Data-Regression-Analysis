@@ -1,0 +1,743 @@
+---
+title: "BANA 7052 Final Project Code Appendix - Group 3"
+author:
+  - Hart Williams
+  - Anusk Bhandari
+  - Riley Lamport
+  - Brian Arthur
+format:
+  html:
+    embed-resources: true
+---
+
+```{r setup}
+library(conflicted)   # Resolve conflicts between libraries
+library(readxl)       # To read Excel file
+library(tidyverse) 
+library(plotly)       # For plots
+library(patchwork)    # For plots
+library(GGally)       # For plots
+library(car)          # For linear model
+library(tidyr)        # For plots
+library(ggplot2)      # For plots
+library(pROC)         # Plot ROC curve
+
+conflict_prefer("filter", "dplyr")
+conflict_prefer("lag", "dplyr")
+conflict_prefer("select", "dplyr")
+conflict_scout()   # lists any remaining unresolved conflicts
+
+set.seed(7052)
+raisin <- read_excel("Raisin_Dataset.xlsx")
+```
+
+## Data preparation
+<!-- every cleaning step, in code — nothing by hand -->
+
+# Initial Data Inspection
+```{r}
+dim(raisin)
+head(raisin)
+str(raisin)
+glimpse(raisin)
+summary(raisin)
+```
+
+# Data Overview and Quality
+
+The dataset contains 900 raisin observations and eight variables: seven numerical measurements and one categorical variable, `Class`, identifying the raisin as either Besni or Kecimen.
+
+We check the distribution of the two classes, missing values, duplicate observations, and the ranges of the numerical variables.
+
+```{r data-quality}
+raisin$Class <- as.factor(raisin$Class)
+
+levels(raisin$Class)
+
+table(raisin$Class)
+
+colSums(is.na(raisin))
+
+sum(duplicated(raisin))
+
+summary(raisin)
+```
+The two raisin varieties are equally represented, with 450 observations from each class. No missing values or duplicate observations were found. In addition, the numerical summaries do not indicate impossible values such as negative areas or axis lengths.
+
+# --------------------------------------------------
+
+## Exploratory analysis
+<!-- the plots and summaries that motivated the models -->
+
+# Descriptive Statistics by Raisin Variety
+
+To compare the two raisin varieties, summary statistics are calculated separately for Besni and Kecimen raisins. Particular attention is given to Area, Major Axis Length, and Minor Axis Length because these variables are central to the proposed regression model.
+
+```{r grouped-summary}
+raisin %>%
+  group_by(Class) %>%
+  summarise(
+    n = n(),
+    
+    mean_area = mean(Area),
+    sd_area = sd(Area),
+    median_area = median(Area),
+    
+    mean_major_axis = mean(MajorAxisLength),
+    sd_major_axis = sd(MajorAxisLength),
+    
+    mean_minor_axis = mean(MinorAxisLength),
+    sd_minor_axis = sd(MinorAxisLength)
+  )
+```
+
+The descriptive statistics show noticeable differences in size between the two raisin varieties. Besni raisins have a substantially larger mean Area than Kecimen raisins. Besni raisins also have a larger average Major Axis Length.
+
+The larger standard deviations observed for Besni raisins suggest that Besni raisins also exhibit greater variability in size. These differences indicate that raisin variety may be important when explaining variation in Area.
+
+# Distribution of Area
+
+Because Area will serve as the response variable in the regression model, its distribution is examined both overall and separately by raisin variety.
+
+```{r area-distributions, fig.width=12, fig.height=8, out.width="100%"}
+p <- ggplot(raisin, aes(x = Area)) +
+  geom_histogram(
+    bins = 30,
+    color = "white"
+  ) +
+  labs(
+    title = "Distribution of Raisin Area",
+    x = "Area",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+p_class <- ggplot(raisin, aes(x = Area, fill = Class)) +
+  geom_histogram(
+    bins = 30,
+    alpha = 0.6,
+    position = "identity"
+  ) +
+  labs(
+    title = "Distribution of Area by Raisin Variety",
+    x = "Area",
+    y = "Count",
+    fill = "Variety"
+  ) +
+  theme_minimal()
+
+p + p_class
+```
+
+The overall distribution of raisin Area appears right-skewed, with several observations having substantially larger areas than most of the dataset.
+
+Separating the distribution by Class shows noticeable differences between Besni and Kecimen raisins. Besni raisins tend to have larger areas, although some overlap exists between the two distributions. This provides initial evidence that `Class` may help explain variation in Area.
+
+# Comparison of Key Measurements by Raisin Variety
+
+Boxplots are used to compare the distributions of Area, Major Axis Length, and Minor Axis Length between Besni and Kecimen raisins.
+
+```{r boxplots, fig.width=12, fig.height=8, out.width="100%"}
+p_area <- ggplot(
+  raisin,
+  aes(x = Class, y = Area, fill = Class)
+) +
+  geom_boxplot() +
+  labs(
+    title = "Area by Raisin Variety",
+    x = "Raisin Variety",
+    y = "Area"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p_major <- ggplot(
+  raisin,
+  aes(x = Class, y = MajorAxisLength, fill = Class)
+) +
+  geom_boxplot() +
+  labs(
+    title = "Major Axis Length by Raisin Variety",
+    x = "Raisin Variety",
+    y = "Major Axis Length"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p_minor <- ggplot(
+  raisin,
+  aes(x = Class, y = MinorAxisLength, fill = Class)
+) +
+  geom_boxplot() +
+  labs(
+    title = "Minor Axis Length by Raisin Variety",
+    x = "Raisin Variety",
+    y = "Minor Axis Length"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p_area
+
+p_major + p_minor
+```
+
+The boxplots show systematic size differences between the two raisin varieties. Besni raisins generally have larger Area and axis-length measurements, while Kecimen raisins tend to have smaller measurements.
+
+Several potential outliers are visible, especially among the larger observations. These observations are retained because unusual observations are not necessarily errors. Their influence can be examined later during regression diagnostics.
+
+# Relationships Between Measurement variables and Area
+
+To investigate which measurements are associated with Area, each numerical predictor is plotted against Area.
+
+```{r scatterplots-area, fig.width=12, fig.height=8, out.width="100%"}
+df_long_area <- pivot_longer(
+  raisin,
+  cols = -c(Class, Area),
+  names_to = "variable",
+  values_to = "value"
+)
+
+ggplot(
+  df_long_area,
+  aes(
+    x = value,
+    y = Area,
+    color = Class
+  )
+) +
+  geom_point(alpha = 0.5) +
+  facet_wrap(
+    ~ variable,
+    scales = "free_x"
+  ) +
+  labs(
+    title = "Relationships Between Measurement variables and Area",
+    subtitle = "Observations colored by raisin variety",
+    x = "Predictor Value",
+    y = "Area",
+    color = "Variety"
+  ) +
+  theme_minimal()
+```
+
+The scatterplots show that several size-related  are strongly associated with Area.
+
+Major Axis Length, Minor Axis Length, Convex Area, and Perimeter show clear positive relationships with Area. Eccentricity and Extent appear to have weaker relationships with Area.
+
+The separation between Besni and Kecimen observations in several plots also suggests that raisin variety may contribute information beyond the individual numerical measurements.
+
+# Major Axis Length and Area
+
+Investigating Major Axis Length as it is one of the primary predictors proposed for the regression model:
+
+```{r major-area, fig.width=12, fig.height=8, out.width="100%"}
+ggplot(
+  raisin,
+  aes(
+    x = MajorAxisLength,
+    y = Area,
+    color = Class
+  )
+) +
+  geom_point(alpha = 0.45) +
+  geom_smooth(
+    method = "lm",
+    se = FALSE
+  ) +
+  labs(
+    title = "Area vs. Major Axis Length",
+    subtitle = "Linear trends shown separately by raisin variety",
+    x = "Major Axis Length",
+    y = "Area",
+    color = "Variety"
+  ) +
+  theme_minimal()
+```
+
+Area increases as Major Axis Length increases for both varieties.
+
+Differences in the fitted slopes would motivate formally testing an interaction between `Class` and `MajorAxisLength` in the regression model.
+
+# Minor Axis Length and Area
+
+The relationship between Minor Axis Length and Area is also examined separately by raisin variety.
+
+```{r minor-area, fig.width=12, fig.height=8, out.width="100%"}
+ggplot(
+  raisin,
+  aes(
+    x = MinorAxisLength,
+    y = Area,
+    color = Class
+  )
+) +
+  geom_point(alpha = 0.45) +
+  geom_smooth(
+    method = "lm",
+    se = FALSE
+  ) +
+  labs(
+    title = "Area vs. Minor Axis Length",
+    subtitle = "Linear trends shown separately by raisin variety",
+    x = "Minor Axis Length",
+    y = "Area",
+    color = "Variety"
+  ) +
+  theme_minimal()
+```
+Area also increases with Minor Axis Length.
+
+# Distribution of Measurement variables by Class
+
+Density plots are used to compare the distributions of all numerical measurements between Besni and Kecimen raisins.
+
+These plots help identify which measurements differ most strongly between the two varieties.
+
+```{r density-plots, fig.width=12, fig.height=8, out.width="100%"}
+df_long <- pivot_longer(
+  raisin,
+  cols = -Class,
+  names_to = "variable",
+  values_to = "value"
+)
+
+ggplot(
+  df_long,
+  aes(
+    x = value,
+    fill = Class
+  )
+) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(
+    ~ variable,
+    scales = "free"
+  ) +
+  labs(
+    title = "Distribution of Measurement variables by Raisin Variety",
+    subtitle = "Density distributions for Besni and Kecimen raisins",
+    x = "Value",
+    y = "Density",
+    fill = "Variety"
+  ) +
+  theme_minimal()
+```
+
+The density plots indicate that some measurement varaibles provide greater separation between the two raisin varieties than others.
+
+Size-related variables such as Area and the axis-length measurements show noticeable differences between Besni and Kecimen raisins, although substantial overlap remains.
+
+The overlap suggests that no single measurement completely separates the two varieties.
+
+# Correlation Among Numerical Variables
+
+A correlation matrix is used to examine relationships among the numerical measurements.
+
+```{r correlation-matrix}
+numeric_data <- raisin %>%
+  select(where(is.numeric))
+
+round(
+  cor(numeric_data),
+  2
+)
+```
+Several size-related variables are strongly correlated with one another, particularly Area, Convex Area, Perimeter, and the axis-length measurements.
+
+These relationships are expected because the variables represent related aspects of raisin size and shape. However, strong correlations among predictors may also lead to multicollinearity in a multiple linear regression model. This should be evaluated later during model fitting.
+
+# Combined Axis Measurement
+
+Because raisin Area is related to both its length and width, the product of Major Axis Length and Minor Axis Length is also explored.
+
+```{r axis-product, fig.width=12, fig.height=8, out.width="100%"}
+ggplot(
+  raisin,
+  aes(
+    x = MajorAxisLength * MinorAxisLength,
+    y = Area,
+    color = Class
+  )
+) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(
+    method = "lm",
+    se = FALSE
+  ) +
+  labs(
+    title = "Area vs. Product of Major and Minor Axis Lengths",
+    x = "Major Axis Length × Minor Axis Length",
+    y = "Area",
+    color = "Variety"
+  ) +
+  theme_minimal()
+```
+This exploratory plot evaluates whether combining both dimensions produces a particularly strong relationship with Area.
+
+# EDA Summary
+
+Overall, the exploratory analysis suggests that raisin size and shape differ meaningfully between the Besni and Kecimen varieties.
+
+Area is strongly associated with several size-related measurements, particularly Major Axis Length, Minor Axis Length, Convex Area, and Perimeter. The distributions of several measurements also differ noticeably between classes.
+
+These findings support the proposed use of Area as the response variable and Major Axis Length, Minor Axis Length, and Class as explanatory variables.
+
+The class-specific patterns in the scatterplots also motivate investigating interactions between Class and axis length to determine whether the relationship between raisin dimensions and Area differs by variety.
+
+The exploratory analysis also identifies two issues that should be evaluated during regression modeling: possible nonlinearity between Area and the size measurements, and potential multicollinearity among highly correlated predictors.
+
+# --------------------------------------------------
+
+## Linear model
+<!-- fit, diagnostics, and the numbers quoted in the talk -->
+
+# Model Objective
+
+The objective of this analysis is to develop a multiple linear regression model to predict raisin Area using geometric measurements and raisin variety. Building on the exploratory data analysis, the initial model includes Major Axis Length, Minor Axis Length, Eccentricity, Extent, Perimeter, and Class. The Raisin Dataset contains 900 observations, which were divided into 720 training observations (80%) and 180 testing observations (20%). A reproducible random split was generated in R using set.seed(7052). Two main model specifications were evaluated: an initial additive regression model and an improved model incorporating an interaction between Major Axis Length and Minor Axis Length. A separate comparison model included ConvexArea to evaluate the predictive contribution of an additional area-related measurement. 
+
+```{r}
+set.seed(7052)
+
+train_id <- sample(
+  seq_len(nrow(raisin)),
+  size = floor(0.8 * nrow(raisin))
+)
+
+train <- raisin[train_id, ]
+test <- raisin[-train_id, ]
+
+cat("Training observations:", nrow(train), "\n")
+cat("Testing observations:", nrow(test), "\n")
+
+```
+# Initial Linear Regression Model
+
+The primary regression model is:
+Area = β₀ + β₁*MajorAxisLength + β₂*MinorAxisLength + β₃*Eccentricity + β₄*Extent + β₅*Perimeter + β₆*Class + ε 
+
+```{r}
+model1 <- lm(
+  Area ~ MajorAxisLength + MinorAxisLength + Eccentricity +
+    Extent + Perimeter + Class,
+  data=train
+)
+
+cat("\nInitial Model Summary:\n")
+print(summary(model1))
+
+cat("\nInitial Model Confidence Intervals:\n")
+print(confint(model1))
+```
+Major Axis Length and Minor Axis Length were positively associated with Area after controlling for the other predictors. Eccentricity and Extent also showed statistically significant positive associations. Perimeter had a negative coefficient despite its positive relationship with Area in the exploratory analysis. This suggests that correlations among geometric measurements may affect the estimated individual predictor effects. Class was not statistically significant at the 5% level (p = 0.0554).
+
+# Initial Model Performance
+
+Predictive performance was evaluated on the 180 held-out testing observations using R², Root Mean Squared Error (RMSE), and Mean Absolute Error (MAE). 
+
+```{r}
+model2 <- lm(
+  Area ~ MajorAxisLength + MinorAxisLength + Eccentricity +
+    Extent + Perimeter + ConvexArea + Class,
+  data = train
+)
+
+cat("\nConvex Area Model Summary:\n")
+print(summary(model2))
+
+
+pred1 <- predict(model1, newdata = test)
+pred2 <- predict(model2, newdata = test)
+
+
+evaluate <- function(actual, predicted) {
+  c(
+    R2 = 1 - sum((actual - predicted)^2) /
+      sum((actual - mean(actual))^2),
+    RMSE = sqrt(mean((actual - predicted)^2)),
+    MAE = mean(abs(actual - predicted))
+  )
+}
+
+
+initial_comparison <- rbind(
+  "Without ConvexArea" = evaluate(test$Area, pred1),
+  "With ConvexArea" = evaluate(test$Area, pred2)
+)
+
+cat("\nInitial Model Comparison:\n")
+print(round(initial_comparison, 4))
+```
+The model without ConvexArea explained approximately 98.43% of the variation in Area relative to the test-set mean. Including ConvexArea improved predictive accuracy substantially, reducing RMSE to 1,919.779. 
+
+However, ConvexArea is closely related to the response variable by definition. Therefore, models excluding ConvexArea provide a more informative assessment of prediction using other geometric measurements. 
+
+# Out-of-Sample Prediction Error Graph
+
+```{r}
+barplot(
+  initial_comparison[, "RMSE"],
+  main = "Out-of-sample prediction error",
+  ylab = "Test RMSE (area units)",
+  col = "steelblue",
+  las = 1
+)
+```
+
+# Initial Regression Diagnostics
+
+Four diagnostic plots were examined to evaluate the assumptions of the initial regression model. The Residuals-versus-Fitted plot displayed a clear U-shaped pattern, suggesting that the additive linear model did not adequately capture the nonlinear relationship between raisin dimensions and Area. The Normal Q–Q plot showed departures from the reference line, indicating deviations from residual normality. The Scale-Location plot showed changing residual variability across fitted values, suggesting heteroscedasticity. The Residuals-versus-Leverage plot also identified potentially influential observations. Variance Inflation Factors (VIF) revealed substantial multicollinearity, particularly for Perimeter (83.68), Major Axis Length (64.85), and Minor Axis Length (11.80). These results suggested that several predictors contained overlapping information. 
+
+# Initial Regression Diagnostics — Four Graphs
+
+```{r}
+par(mfrow = c(2, 2))
+
+plot(model1)
+
+par(mfrow = c(1, 1))
+
+cat("\nInitial Model VIF:\n")
+print(vif(model1))
+```
+
+These diagnostic findings motivated the development of an improved regression model. 
+
+# Uncentered Interaction Model
+
+```{r}
+model4 <- lm(
+  Area ~ MajorAxisLength * MinorAxisLength +
+    Eccentricity + Extent + Class,
+  data = train
+)
+
+cat("\nUncentered Interaction Model:\n")
+print(summary(model4))
+
+pred4 <- predict(model4, newdata = test)
+
+cat("\nUncentered Interaction Test Results:\n")
+print(round(evaluate(test$Area, pred4), 4))
+```
+
+# Final Centered Interaction Model
+
+```{r}
+major_mean <- mean(train$MajorAxisLength)
+minor_mean <- mean(train$MinorAxisLength)
+
+train$Major_c <- train$MajorAxisLength - major_mean
+train$Minor_c <- train$MinorAxisLength - minor_mean
+
+test$Major_c <- test$MajorAxisLength - major_mean
+test$Minor_c <- test$MinorAxisLength - minor_mean
+
+model5 <- lm(
+  Area ~ Major_c * Minor_c +
+    Eccentricity + Extent + Class,
+  data = train
+)
+
+cat("\nFinal Centered Model Summary:\n")
+print(summary(model5))
+
+cat("\nFinal Model Confidence Intervals:\n")
+print(confint(model5))
+
+cat("\nFinal Model GVIF:\n")
+print(vif(model5, type = "predictor"))
+```
+
+To address the nonlinear residual pattern and reduce redundancy among predictors, Perimeter was removed and an interaction between Major Axis Length and Minor Axis Length was introduced. The axis measurements were centered by subtracting their respective training-sample means. 
+
+The improved model was specified as: 
+
+Area = β₀ + β₁(Major_c) + β₂(Minor_c) + β₃(Major_c × Minor_c) + β₄(Eccentricity) + β₅(Extent) + β₆(Class) + ε 
+
+The improved model achieved a training R² of 0.9945 and an adjusted R² of 0.9944. 
+
+# --------------------------------------------------
+
+## GLM
+<!-- fit, checks (dispersion if counts), predicted values -->
+
+```{r}
+rm(raisin)
+data <- read_excel("Raisin_Dataset.xlsx")
+set.seed(7052)
+```
+
+# Train-test stratified split
+
+```{r}
+# Get 720 observations (80%) to train and 180 (20%) to test
+
+besni_idx   <- which(data$Class == "Besni")
+kecimen_idx <- which(data$Class == "Kecimen")
+
+train_idx <- c(sample(besni_idx,   size = 0.8 * length(besni_idx)),
+               sample(kecimen_idx, size = 0.8 * length(kecimen_idx)))
+
+train <- data[train_idx, ]
+test  <- data[-train_idx, ]
+
+nrow(train); nrow(test)    
+table(train$Class); table(test$Class)
+```
+# Correlation Matrix
+
+```{r}
+attach(train)
+
+# Variables with correlations near 0.9 or higher are carrying nearly the same information, so keep one from each such group
+cor(train[, names(train) != "Class"])
+```
+# Test Different Predictors
+
+```{r}
+# Area strongly collinear with 4 predictors, so skip
+# Convex Area strongly collinear with both axes, so skip
+# Perimeter strongly collinear with major axis, so skip
+
+train$is_besni <- ifelse(train$Class == "Besni", 1, 0)
+gfit <- glm(is_besni ~ MajorAxisLength + MinorAxisLength + Eccentricity + Extent, family=binomial, data=train)
+coef(summary(gfit))
+```
+```{r}
+# MinorAxisLength had the largest p-value, so leave out
+gfit <- glm(is_besni ~ MajorAxisLength + Eccentricity + Extent, family=binomial, data=train)
+coef(summary(gfit))
+```
+```{r}
+# Eccentricity had the largest p-value, so leave out
+gfit <- glm(is_besni ~ MajorAxisLength + Extent, family=binomial, data=train)
+coef(summary(gfit))
+```
+# Compare two models
+
+```{r}
+# Extent's coefficient had p=0.1457 (Wald test), indicating Extent is not significant at the 0.05 level
+# Can still compare with single-predictor model
+
+fit_big <- gfit  # Rename fit for comparison
+fit_small <- glm(is_besni ~ MajorAxisLength, family=binomial, data=train)
+
+anova(fit_small, fit_big, test = "Chisq")   # Does adding Extent significntly improve the fit?
+```
+```{r}
+AIC(fit_small, fit_big)   # lower is better
+```
+
+- In the training data, Extent's coefficient was not significant at the 0.05 level (Wald p = 0.1457). A likelihood ratio chi-squared test comparing the model with and without Extent gave p = 0.1426, which agrees: adding Extent does not significantly improve the fit. We therefore dropped Extent and used MajorAxisLength as the sole predictor.
+
+- The AIC for the smaller model is marginally lower (by about 0.15) and within 2 of the larger model, both of which support choosing the simpler model.
+
+- Extent was borderline in the full dataset (p ≈ 0.10), but it was weaker in the training data, so the evidence overall does not support including it.
+
+# Coefficients for chosen model
+```{r}
+gfit <- fit_small
+rm(fit_big)
+rm(fit_small)
+
+coef(summary(gfit))
+```
+
+The estimated coefficients are β₀ = -11.1757,and β₁ (MajorAxisLength) = 0.0270. According to the Wald test, MajorAxisLength is significant at the α = 0.05 level. The fitted model is:
+
+log(p / (1 − p)) = −11.1757 + 0.027·MajorAxisLength
+
+where p is the probability that a raisin is Besni.
+
+# Odds ratio & confidence interval
+
+```{r}
+exp(coef(gfit))      # odds ratio
+exp(confint(gfit))   # 95% confidence interval for the odds ratio
+```
+```{r}
+# A 1-pixel change is tiny, so rescale to 10 pixels
+or10 <- exp(10 * coef(gfit)["MajorAxisLength"])
+or10
+
+ci <- confint(gfit)
+exp(10 * ci["MajorAxisLength", ])   # 95% CI per 10 pixels
+
+print("Percent increase in odds per 10 pixels:")
+(or10 - 1) * 100
+```
+
+- Each 1-pixel increase in MajorAxisLength multiplies the odds of a raisin being Besni by 1.027, or about 1.31 for each 10-pixel increase (95% CI [1.26, 1.37]), which corresponds with about a 31% increase in the odds.
+- Since the interval excludes 1, longer raisins are significantly more likely to be Besni.
+
+# Example probabilities
+
+```{r}
+lengths <- quantile(data$MajorAxisLength, c(0.25, 0.5, 0.75))
+
+new_vals <- data.frame(MajorAxisLength = lengths)
+new_vals$prob_besni <- predict(gfit, newdata = new_vals, type = "response")
+new_vals
+```
+
+Predicted probabilities are shown above at the 25th, 50th, and 75th percentiles of MajorAxisLength in the training data.
+
+# Confusion matrix
+
+```{r}
+test$is_besni  <- ifelse(test$Class  == "Besni", 1, 0)
+
+# predicted probability of Besni for the unseen raisins
+p_hat <- predict(gfit, newdata = test, type = "response")
+
+# classify using a 0.5 cutoff
+pred_class <- ifelse(p_hat > 0.5, 1, 0)
+
+# confusion matrix
+cm <- table(Predicted = factor(pred_class, levels = c(0, 1)),
+            Actual    = factor(test$is_besni, levels = c(0, 1)))
+cm
+
+# summary metrics
+accuracy    <- sum(diag(cm)) / sum(cm)
+sensitivity <- cm["1", "1"] / sum(cm[, "1"])   # Besni correctly identified
+specificity <- cm["0", "0"] / sum(cm[, "0"])   # Kecimen correctly identified
+
+accuracy; sensitivity; specificity
+```
+
+Confusion matrix metrics (0.5 cutoff, 180 test raisins, 90 per variety):
+
+- Accuracy: (76 + 77) / 180 = 153/180 = 0.850
+- Sensitivity (Besni correctly identified): 77/90 = 0.856
+- Specificity (Kecimen correctly identified): 76/90 = 0.844
+
+# ROC Curve, AOC
+
+```{r}
+roc_obj <- roc(test$is_besni, p_hat)
+plot(roc_obj)
+plot(ci.se(roc_obj, specificities = seq(0, 1, 0.05)), type = "shape", col = "grey")
+
+auc(roc_obj)
+ci.auc(roc_obj)
+```
+
+- The ROC curve, which summarizes sensitivity and specificity across all possible cutoffs, rises well above the diagonal line representing random guessing.
+- The area under the curve (AUC) is 0.932 (95% CI [0.896, 0.967]), meaning that for a randomly chosen Besni and Kecimen raisin, the model assigns a higher probability of Besni to the actual Besni raisin about 93% of the time.
+- This indicates excellent discrimination using MajorAxisLength alone, and it answers our research question: a raisin's variety can be predicted fairly well from a single size measurement.
+
+# --------------------------------------------------
+
+## Contribution statement
+<!-- member → segment presented → work performed -->
+- Hart Williams: Presented GLM | Completed GLM, compiled code appendix, found chosen dataset
+- Anusk Bhandari: Presented EDA | Completed Data Inspection & EDA
+- Riley Lamport: Presented Overview & Conclusion | Developed slides, communicated & verified requirements
+- Brian Arthur: Presented Linear Model | Completed Linear Model
+
+## Session info
+```{r}
+sessionInfo()
+```
